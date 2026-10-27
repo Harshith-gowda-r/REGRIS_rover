@@ -1,0 +1,8 @@
+ultralytics
+opencv-python
+numpy
+pyserial
+requests
+firebase-admin
+aiortc
+av

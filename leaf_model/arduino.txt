@@ -1,0 +1,530 @@
+#include <Servo.h>
+
+
+// PIN CONFIGURATION
+
+
+#define BASE_SERVO_PIN       9
+#define SHOULDER_SERVO_PIN   10
+#define ELBOW_SERVO_PIN      11
+
+#define TRIG_PIN             5
+#define ECHO_PIN             6
+
+#define PUMP_RELAY_PIN       7
+
+
+
+// SERVO OBJECTS
+
+
+Servo baseServo;
+Servo shoulderServo;
+Servo elbowServo;
+
+
+
+// CURRENT SERVO POSITIONS
+
+int basePos = 45;
+int shoulderPos = 90;
+int elbowPos = 75;
+
+
+// HOME POSITION
+
+
+const int HOME_BASE = 45;
+const int HOME_SHOULDER = 90;
+const int HOME_ELBOW = 75;
+
+
+
+// SERVO MOVEMENT SPEED
+
+
+const int MOVE_DELAY = 20;
+
+
+
+// SETUP
+
+
+void setup()
+{
+  Serial.begin(115200);
+
+  
+  // Servo setup
+  
+
+  baseServo.attach(BASE_SERVO_PIN);
+  shoulderServo.attach(SHOULDER_SERVO_PIN);
+  elbowServo.attach(ELBOW_SERVO_PIN);
+
+  
+  // Ultrasonic setup
+  
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  
+  // Pump relay
+  
+  pinMode(PUMP_RELAY_PIN, OUTPUT);
+
+  // Pump OFF at startup
+  digitalWrite(PUMP_RELAY_PIN, LOW);
+
+
+  // Move to HOME
+
+
+  baseServo.write(HOME_BASE);
+  shoulderServo.write(HOME_SHOULDER);
+  elbowServo.write(HOME_ELBOW);
+
+  basePos = HOME_BASE;
+  shoulderPos = HOME_SHOULDER;
+  elbowPos = HOME_ELBOW;
+
+  delay(1000);
+
+  Serial.println("ROVER_ARM_READY");
+
+  Serial.print("HOME_POSITION ");
+  Serial.print(basePos);
+  Serial.print(" ");
+  Serial.print(shoulderPos);
+  Serial.print(" ");
+  Serial.println(elbowPos);
+}
+
+
+
+// SMOOTH ARM MOVEMENT
+
+
+void moveArm(
+  int targetBase,
+  int targetShoulder,
+  int targetElbow
+)
+{
+
+  // Safety limits
+
+
+  targetBase = constrain(targetBase, 0, 90);
+  targetShoulder = constrain(targetShoulder, 0, 90);
+  targetElbow = constrain(targetElbow, 0, 90);
+
+  Serial.println("ARM_MOVING");
+
+
+  // Move all three servos together
+
+
+  while (
+    basePos != targetBase ||
+    shoulderPos != targetShoulder ||
+    elbowPos != targetElbow
+  )
+  {
+    // Base
+    if (basePos < targetBase)
+      basePos++;
+    else if (basePos > targetBase)
+      basePos--;
+
+    // Shoulder
+    if (shoulderPos < targetShoulder)
+      shoulderPos++;
+    else if (shoulderPos > targetShoulder)
+      shoulderPos--;
+
+    // Elbow
+    if (elbowPos < targetElbow)
+      elbowPos++;
+    else if (elbowPos > targetElbow)
+      elbowPos--;
+
+    // Write positions
+    baseServo.write(basePos);
+    shoulderServo.write(shoulderPos);
+    elbowServo.write(elbowPos);
+
+    delay(MOVE_DELAY);
+  }
+
+  Serial.println("ARM_REACHED");
+}
+
+
+
+// HOME
+
+
+void goHome()
+{
+  moveArm(
+    HOME_BASE,
+    HOME_SHOULDER,
+    HOME_ELBOW
+  );
+
+  Serial.print("HOME_POSITION ");
+  Serial.print(basePos);
+  Serial.print(" ");
+  Serial.print(shoulderPos);
+  Serial.print(" ");
+  Serial.println(elbowPos);
+}
+
+
+
+// ULTRASONIC DISTANCE
+
+
+float readDistance()
+{
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(3);
+
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(
+    ECHO_PIN,
+    HIGH,
+    30000
+  );
+
+  if (duration == 0)
+  {
+    return -1;
+  }
+
+  float distance =
+    duration * 0.343 / 2.0;
+
+  return distance;
+}
+
+
+
+// MEDIAN DISTANCE
+
+
+float getMedianDistance()
+{
+  const int NUM_READINGS = 20;
+
+  float readings[NUM_READINGS];
+
+  int validCount = 0;
+
+
+  // Collect readings
+
+
+  for (int i = 0; i < NUM_READINGS; i++)
+  {
+    float d = readDistance();
+
+    if (d > 0)
+    {
+      readings[validCount] = d;
+      validCount++;
+    }
+
+    delay(10);
+  }
+
+  if (validCount == 0)
+  {
+    return -1;
+  }
+
+
+  // Sort
+
+
+  for (int i = 0; i < validCount - 1; i++)
+  {
+    for (int j = i + 1; j < validCount; j++)
+    {
+      if (readings[j] < readings[i])
+      {
+        float temp = readings[i];
+
+        readings[i] = readings[j];
+        readings[j] = temp;
+      }
+    }
+  }
+
+
+  // Median
+
+
+  if (validCount % 2 == 1)
+  {
+    return readings[
+      validCount / 2
+    ];
+  }
+  else
+  {
+    int a = validCount / 2 - 1;
+    int b = validCount / 2;
+
+    return (
+      readings[a] +
+      readings[b]
+    ) / 2.0;
+  }
+}
+
+
+
+// DISTANCE COMMAND
+
+
+void printDistance()
+{
+  float distance = getMedianDistance();
+
+  if (distance < 0)
+  {
+    Serial.println("DISTANCE_ERROR");
+    return;
+  }
+
+  Serial.print("DISTANCE ");
+  Serial.println(distance, 1);
+}
+
+
+
+// PUMP CONTROL
+
+
+void sprayPump(int duration)
+{
+
+  // Safety limit: 7–15 seconds
+
+
+  duration = constrain(
+    duration,
+    7,
+    15
+  );
+
+  Serial.print("PUMP_ON ");
+  Serial.println(duration);
+
+  digitalWrite(
+    PUMP_RELAY_PIN,
+    HIGH
+  );
+
+  unsigned long startTime =
+    millis();
+
+  while (
+    millis() - startTime
+    < (unsigned long)duration * 1000UL
+  )
+  {
+    // Pump remains ON
+  }
+
+  digitalWrite(
+    PUMP_RELAY_PIN,
+    LOW
+  );
+
+  Serial.println("PUMP_OFF");
+}
+
+
+
+// STATUS
+
+
+void printStatus()
+{
+  Serial.print("STATUS ");
+
+  Serial.print(basePos);
+  Serial.print(" ");
+
+  Serial.print(shoulderPos);
+  Serial.print(" ");
+
+  Serial.println(elbowPos);
+}
+
+
+
+// STOP
+
+
+void stopArm()
+{
+  // Keep current position.
+  // Immediately stop further commanded movement.
+
+  baseServo.write(basePos);
+  shoulderServo.write(shoulderPos);
+  elbowServo.write(elbowPos);
+
+  Serial.println("STOPPED");
+}
+
+
+
+// SERIAL COMMAND PROCESSING
+
+
+void processCommand(String command)
+{
+  command.trim();
+
+  if (command.length() == 0)
+    return;
+
+
+
+  // HOME
+
+
+  if (command == "HOME")
+  {
+    goHome();
+    return;
+  }
+
+
+
+  // DISTANCE
+
+
+  if (command == "DISTANCE")
+  {
+    printDistance();
+    return;
+  }
+
+
+
+  // STATUS
+
+
+  if (command == "STATUS")
+  {
+    printStatus();
+    return;
+  }
+
+
+
+  // STOP
+
+
+  if (command == "STOP")
+  {
+    stopArm();
+    return;
+  }
+
+
+
+  // MOVE B S E
+
+
+  if (command.startsWith("MOVE "))
+  {
+    int base;
+    int shoulder;
+    int elbow;
+
+    int parsed = sscanf(
+      command.c_str(),
+      "MOVE %d %d %d",
+      &base,
+      &shoulder,
+      &elbow
+    );
+
+    if (parsed == 3)
+    {
+      moveArm(
+        base,
+        shoulder,
+        elbow
+      );
+    }
+    else
+    {
+      Serial.println("INVALID_MOVE");
+    }
+
+    return;
+  }
+
+
+
+  // SPRAY seconds
+
+
+  if (command.startsWith("SPRAY "))
+  {
+    int duration;
+
+    int parsed = sscanf(
+      command.c_str(),
+      "SPRAY %d",
+      &duration
+    );
+
+    if (parsed == 1)
+    {
+      sprayPump(duration);
+    }
+    else
+    {
+      Serial.println("INVALID_SPRAY");
+    }
+
+    return;
+  }
+
+
+
+  // UNKNOWN COMMAND
+
+
+  Serial.println("UNKNOWN_COMMAND");
+}
+
+
+
+// MAIN LOOP
+
+
+void loop()
+{
+  if (Serial.available())
+  {
+    String command =
+      Serial.readStringUntil('\n');
+
+    processCommand(command);
+  }
+}
